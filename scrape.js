@@ -3,15 +3,11 @@ import path from "path";
 import * as XLSX from "xlsx";
 import { chromium } from "playwright";
 
-// Base URL (the main Snallygaster 2025 page)
 const BASE_URL = "https://untappd.com/v/snallygaster-2025/13633892?menu_id=247596";
-
-// Directory for output
 const OUT_DIR = "./data";
-if (!fs.existsSync(OUT_DIR)) fs.mkdirSync(OUT_DIR, { recursive: true });
 
-function sanitize(text) {
-  return text?.trim().replace(/\s+/g, " ") || "";
+if (!fs.existsSync(OUT_DIR)) {
+  fs.mkdirSync(OUT_DIR, { recursive: true });
 }
 
 function toExcel(rows, filePath) {
@@ -24,38 +20,55 @@ function toExcel(rows, filePath) {
 async function scrapeSnallygaster() {
   const browser = await chromium.launch({ headless: true });
   const page = await browser.newPage();
+
   console.log(`[INFO] Navigating to: ${BASE_URL}`);
   await page.goto(BASE_URL, { waitUntil: "networkidle" });
 
-  // Scroll to load all beers
-  let previousHeight;
+  // Scroll through to load all beers
+  let previousHeight = 0;
   while (true) {
-    previousHeight = await page.evaluate("document.body.scrollHeight");
-    await page.evaluate("window.scrollTo(0, document.body.scrollHeight)");
-    await page.waitForTimeout(1500);
-    const newHeight = await page.evaluate("document.body.scrollHeight");
+    const newHeight = await page.evaluate(() => document.body.scrollHeight);
     if (newHeight === previousHeight) break;
+    previousHeight = newHeight;
+    await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+    await page.waitForTimeout(1500);
   }
 
-  // Scrape beers
-  const beers = await page.$$eval(".menu-item", (cards) => {
-    return cards.map((card) => {
-      const name = card.querySelector(".menu-item-name")?.innerText || "";
-      const brewery = card.querySelector(".menu-item-brewery")?.innerText || "";
-      const style = card.querySelector(".menu-item-style")?.innerText || "";
-      const abv = card.querySelector(".menu-item-abv")?.innerText || "";
-      return { Name: name.trim(), Brewery: brewery.trim(), Style: style.trim(), ABV: abv.trim() };
-    });
-  });
+  // Extract beer data
+  const beers = await page.$$eval(".menu-item", (cards) =>
+    cards.map((card) => {
+      const name = card.querySelector(".menu-item-name")?.innerText?.trim() || "";
+      const brewery = card.querySelector(".menu-item-brewery")?.innerText?.trim() || "";
+      const style = card.querySelector(".menu-item-style")?.innerText?.trim() || "";
+      const abv = card.querySelector(".menu-item-abv")?.innerText?.trim() || "";
+      return { Name: name, Brewery: brewery, Style: style, ABV: abv };
+    })
+  );
 
   await browser.close();
 
-  if (beers.length === 0) {
-    console.warn("[WARN] No beers found. Site may have changed.");
+  if (!beers.length) {
+    console.warn("[WARN] No beers found — Untappd structure may have changed.");
   } else {
-    console.log(`[OK] Found ${beers.length} beers`);
+    console.log(`[OK] Found ${beers.length} beers.`);
   }
 
-  // Save as CSV and Excel
-  const csvPath = pat
+  // Save results
+  const csvPath = path.join(OUT_DIR, "snallygaster_2025.csv");
+  const xlsxPath = path.join(OUT_DIR, "snallygaster_2025.xlsx");
 
+  const csvData =
+    "Name,Brewery,Style,ABV\n" +
+    beers.map((b) => `${b.Name},${b.Brewery},${b.Style},${b.ABV}`).join("\n");
+
+  fs.writeFileSync(csvPath, csvData);
+  toExcel(beers, xlsxPath);
+
+  console.log("[DONE] Files saved to ./data/");
+  console.log("- snallygaster_2025.csv");
+  console.log("- snallygaster_2025.xlsx");
+}
+
+scrapeSnallygaster().catch((err) => {
+  console.error("[ERROR]", err);
+});
