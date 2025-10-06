@@ -2,26 +2,29 @@ name: Scrape Snallygaster (Playwright)
 
 on:
   workflow_dispatch: {}
+  # Optional: uncomment to auto-run daily at 9 AM ET
+  # schedule:
+  #   - cron: "0 13 * * *"
 
 permissions:
-  contents: write   # allow committing CSV/XLSX back to the repo
+  contents: write   # allow pushing CSV/XLSX to the repo
 
 jobs:
   scrape:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup Node
+      - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: "20"
 
-      - name: Install deps
+      - name: Install dependencies
         run: |
-          npm ci || npm i
+          npm ci || npm install
 
       - name: Install Playwright browsers
         run: npx playwright install --with-deps
@@ -37,7 +40,7 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           mkdir -p data
           git add data/snallygaster_2025.csv data/snallygaster_2025.xlsx || true
-          git commit -m "Update Snallygaster data (Playwright run)" || echo "No changes"
+          git commit -m "Update Snallygaster data (Playwright scrape)" || echo "No changes"
           git push
 
       - name: Upload artifact (download on phone)
@@ -47,3 +50,5 @@ jobs:
           path: |
             data/snallygaster_2025.csv
             data/snallygaster_2025.xlsx
+            data/debug-*.html
+            data/debug-*.png
