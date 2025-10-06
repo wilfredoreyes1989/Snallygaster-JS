@@ -1,29 +1,49 @@
-name: Scrape Snallygaster
+name: Scrape Snallygaster (Playwright)
 
 on:
-  workflow_dispatch: {}  # lets you run it manually from your phone
+  workflow_dispatch: {}
+
+permissions:
+  contents: write   # allow committing CSV/XLSX back to the repo
 
 jobs:
   scrape:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repo
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up Node
+      - name: Setup Node
         uses: actions/setup-node@v4
         with:
           node-version: '20'
 
-      - name: Install dependencies
-        run: npm install
+      - name: Install deps
+        run: |
+          npm ci || npm i
+
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps
 
       - name: Run scraper
+        env:
+          BASE_URL: "https://untappd.com/v/snallygaster-2025/13633892?menu_id=247596"
         run: node scrape.js
 
-      - name: Upload data
+      - name: Commit results to repo
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          mkdir -p data
+          git add data/snallygaster_2025.csv data/snallygaster_2025.xlsx || true
+          git commit -m "Update Snallygaster data (Playwright run)" || echo "No changes"
+          git push
+
+      - name: Upload artifact (download on phone)
         uses: actions/upload-artifact@v4
         with:
           name: snallygaster-data
-          path: data/
+          path: |
+            data/snallygaster_2025.csv
+            data/snallygaster_2025.xlsx
