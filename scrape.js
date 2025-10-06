@@ -1,4 +1,4 @@
-// scrape.js — Scrape ALL Snallygaster 2025 tabs into CSV/XLSX
+// scrape.js — ALL tabs, stealthier context, debug dumps
 import fs from "fs";
 import path from "path";
 import * as XLSX from "xlsx";
@@ -35,8 +35,10 @@ async function acceptBanners(page) {
   ];
   for (const sel of sels) {
     try {
-      const loc = sel.startsWith("//") ? page.locator(sel).first() : page.locator(sel);
-      if (await loc.isVisible({ timeout: 800 })) {
+      const loc = sel.startsWith("//")
+        ? page.locator(sel).first()
+        : page.locator(sel);
+      if (await loc.isVisible({ timeout: 1000 })) {
         await loc.click().catch(() => {});
         await page.waitForTimeout(400);
       }
@@ -44,11 +46,11 @@ async function acceptBanners(page) {
   }
 }
 
-async function scrollToBottom(page, max = 60) {
+async function scrollToBottom(page, max = 80) {
   let last = await page.evaluate(() => document.body.scrollHeight);
   for (let i = 0; i < max; i++) {
     await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
-    await page.waitForTimeout(600);
+    await page.waitForTimeout(700);
     const cur = await page.evaluate(() => document.body.scrollHeight);
     if (cur === last) break;
     last = cur;
@@ -64,16 +66,18 @@ async function clickShowMore(page) {
       .first();
     if (!(await btn.isVisible().catch(() => false))) break;
     await btn.click().catch(() => {});
-    await page.waitForTimeout(800);
+    await page.waitForTimeout(900);
   }
 }
 
 async function discoverTabs(page) {
-  // Collect all links with ?menu_id=, unique by menu_id
+  // Grab all anchor hrefs containing ?menu_id=, plus current
   const hrefs = await page.$$eval("a[href*='menu_id=']", (as) =>
     Array.from(new Set(as.map((a) => a.href)))
   );
   if (page.url().includes("menu_id=")) hrefs.unshift(page.url());
+
+  // unique by menu_id
   const seen = new Set();
   const out = [];
   for (const u of hrefs) {
@@ -88,8 +92,10 @@ async function discoverTabs(page) {
   return out.sort();
 }
 
+// Runs inside the page to extract rows
 function parseBeersFromDOM() {
   const sels = [
+    // common Untappd menu card containers
     "div.menu-item",
     "div.menu-items .menu-item",
     "div.card",
@@ -98,9 +104,12 @@ function parseBeersFromDOM() {
     "div.item",
     "li.item",
     "article",
+    // fallback: any li under obvious menu/section blocks
+    "section li",
   ];
   const clean = (t) => (t || "").replace(/\s+/g, " ").trim();
 
+  // gather candidates
   const nodes = [];
   for (const s of sels) document.querySelectorAll(s).forEach((n) => nodes.push(n));
 
@@ -118,7 +127,9 @@ function parseBeersFromDOM() {
     if (!name) continue;
 
     const breweryEl =
-      n.querySelector(".menu-item-brewery, .brewery, .vendor, .producer, .subtitle, .secondary, a[href*='/brewery/']");
+      n.querySelector(
+        ".menu-item-brewery, .brewery, .vendor, .producer, .subtitle, .secondary, a[href*='/brewery/']"
+      );
     const brewery = breweryEl ? clean(breweryEl.textContent) : null;
 
     const styleEl =
@@ -134,25 +145,49 @@ function parseBeersFromDOM() {
 
     rows.push({ Name: name, Brewery: brewery, Style: style, "ABV%": abv });
   }
-  return rows;
+
+  return { count: rows.length, rows };
 }
 
-async function scrapeTab(page, url) {
+async function scrapeTab(page, url, idx) {
   await page.goto(url, { waitUntil: "domcontentloaded", timeout: 45000 });
   await page.waitForLoadState("networkidle").catch(() => {});
   await acceptBanners(page);
   await scrollToBottom(page);
   await clickShowMore(page);
-  const rows = await page.evaluate(parseBeersFromDOM);
+
+  // DEBUG: dump what the runner sees
+  const mid = (() => {
+    try { return new URL(url).searchParams.get("menu_id") || `tab${idx}`; }
+    catch { return `tab${idx}`; }
+  })();
+  fs.writeFileSync(path.join(OUT_DIR, `debug-${mid}.html`), await page.content(), "utf8");
+  try { await page.screenshot({ path: path.join(OUT_DIR, `debug-${mid}.png`), fullPage: true }); } catch {}
+
+  const { count, rows } = await page.evaluate(parseBeersFromDOM);
+  console.log(`[INFO] Parsed ${count} rows from ${url}`);
   return rows.map((r) => ({ ...r, "Source URL": url }));
 }
 
 async function main() {
   const browser = await chromium.launch({
     headless: true,
-    args: ["--no-sandbox", "--disable-dev-shm-usage"],
+    args: ["--no-sandbox", "--disable-dev-shm-usage", "--disable-blink-features=AutomationControlled"]
   });
-  const page = await (await browser.newContext({ viewport: { width: 1366, height: 2400 } })).newPage();
+
+  // “Stealthier” context
+  const context = await browser.newContext({
+    viewport: { width: 1366, height: 2400 },
+    userAgent:
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123 Safari/537.36",
+    locale: "en-US"
+  });
+  // Hide webdriver flag
+  await context.addInitScript(() => {
+    Object.defineProperty(navigator, "webdriver", { get: () => undefined });
+  });
+
+  const page = await context.newPage();
 
   console.log("[INFO] Base URL:", BASE_URL);
   await page.goto(BASE_URL, { waitUntil: "domcontentloaded", timeout: 45000 });
@@ -170,7 +205,7 @@ async function main() {
   let all = [];
   for (let i = 0; i < tabs.length; i++) {
     console.log(`[INFO] Scraping ${i + 1}/${tabs.length}: ${tabs[i]}`);
-    const rows = await scrapeTab(page, tabs[i]);
+    const rows = await scrapeTab(page, tabs[i], i + 1);
     all = all.concat(rows);
   }
 
@@ -181,7 +216,9 @@ async function main() {
   const csv =
     [headers.join(",")]
       .concat(
-        all.map((r) => headers.map((h) => `"${String(r[h] ?? "").replace(/"/g, '""')}"`).join(","))
+        all.map((r) => headers
+          .map((h) => `"${String(r[h] ?? "").replace(/"/g, '""')}"`)
+          .join(","))
       )
       .join("\n");
   fs.writeFileSync(CSV_PATH, csv, "utf8");
